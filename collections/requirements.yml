@@ -1,0 +1,9 @@
+---
+# AAP: ansible.controller is supplied by the selected execution environment.
+# Project sync does not install or modify the EE's collections.
+collections: []
+
+# CLI placeholder: obtain ansible.controller from the supported Automation Hub
+# source and enable the declaration below if collection installation is needed.
+# collections:
+#   - name: ansible.controller

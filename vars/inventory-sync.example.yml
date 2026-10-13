@@ -1,0 +1,14 @@
+---
+# Copy to a non-secret operator vars file or the AAP job template's extra vars.
+# Enter the exact two inventory/source names or IDs. Nothing is auto-discovered.
+inventory_sync_sources:
+  - inventory: ""
+    source: ""
+    # organization: ""
+  - inventory: ""
+    source: ""
+    # organization: ""
+
+# Seconds per source. Each source runs and completes before the next starts.
+inventory_sync_timeout: 600
+inventory_sync_interval: 2

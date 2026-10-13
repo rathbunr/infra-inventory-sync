@@ -1,0 +1,73 @@
+---
+- name: Synchronize selected AAP inventory sources
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+
+  pre_tasks:
+    - name: Require an explicit nonempty source list
+      ansible.builtin.assert:
+        that:
+          - inventory_sync_sources is defined
+          - inventory_sync_sources is sequence
+          - inventory_sync_sources is not string
+          - inventory_sync_sources is not mapping
+          - inventory_sync_sources | length > 0
+        fail_msg: >-
+          Set inventory_sync_sources to a list of inventory/source mappings.
+          No inventory synchronization was requested.
+        quiet: true
+
+    - name: Require positive synchronization timeout and polling interval
+      ansible.builtin.assert:
+        that:
+          - inventory_sync_timeout | default(600) | int > 0
+          - inventory_sync_interval | default(2) | float > 0
+        fail_msg: Synchronization timeout and polling interval must be positive.
+        quiet: true
+
+    - name: Validate each inventory and source selection
+      ansible.builtin.assert:
+        that:
+          - item is mapping
+          - item.inventory is defined
+          - item.source is defined
+          - item.inventory is string or item.inventory is integer
+          - item.source is string or item.source is integer
+          - item.inventory | string | trim | length > 0
+          - item.source | string | trim | length > 0
+          - item.organization | default('') is string or item.organization | default('') is integer
+        fail_msg: >-
+          Each entry requires inventory and source names or IDs.
+          Organization is optional and scopes inventory-name lookup.
+        quiet: true
+      loop: "{{ inventory_sync_sources }}"
+      loop_control:
+        label: "{{ item.inventory | default('missing inventory') }} / {{ item.source | default('missing source') }}"
+
+  tasks:
+    - name: Synchronize each selected source and wait for completion
+      ansible.controller.inventory_source_update:
+        inventory: "{{ item.inventory | string }}"
+        name: "{{ item.source | string }}"
+        organization: "{{ item.organization | default(omit, true) }}"
+        wait: true
+        timeout: "{{ inventory_sync_timeout | default(600) | int }}"
+        interval: "{{ inventory_sync_interval | default(2) | float }}"
+        validate_certs: true
+      loop: "{{ inventory_sync_sources }}"
+      loop_control:
+        label: "{{ item.inventory }} / {{ item.source }}"
+      register: inventory_sync_results
+
+    - name: Report completed inventory synchronization jobs
+      ansible.builtin.debug:
+        msg:
+          inventory: "{{ item.item.inventory }}"
+          source: "{{ item.item.source }}"
+          update_job_id: "{{ item.id }}"
+          status: "{{ item.status }}"
+      loop: "{{ inventory_sync_results.results }}"
+      loop_control:
+        label: "{{ item.item.inventory }} / {{ item.item.source }}"
