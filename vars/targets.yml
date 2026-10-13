@@ -1,0 +1,14 @@
+---
+# These are selectors for existing AAP objects, not creation instructions.
+# Override this mapping in job/node extra vars to reuse the play elsewhere.
+inventory_sync_catalog:
+  inventory_ad:
+    inventory: inventory_ad
+    source: source_ad_ldap
+    source_type: scm
+    constructed_inventory: managed_windows
+  inventory_satellite:
+    inventory: inventory_satellite
+    source: source_satellite
+    source_type: satellite6
+    constructed_inventory: managed_linux

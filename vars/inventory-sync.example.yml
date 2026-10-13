@@ -1,14 +1,13 @@
 ---
-# Copy to a non-secret operator vars file or the AAP job template's extra vars.
-# Enter the exact two inventory/source names or IDs. Nothing is auto-discovered.
-inventory_sync_sources:
-  - inventory: ""
-    source: ""
-    # organization: ""
-  - inventory: ""
-    source: ""
-    # organization: ""
-
-# Seconds per source. Each source runs and completes before the next starts.
+# Survey answers or non-secret CLI/job/node extra vars.
+# Values are inventory container names, not source names or inventory IDs.
+inventory_sync_inventories:
+  - inventory_ad
+  - inventory_satellite
+inventory_sync_mode: force
+inventory_sync_organization: RITCSUSA
 inventory_sync_timeout: 600
 inventory_sync_interval: 2
+
+# Normalized bindings live in vars/targets.yml. Override inventory_sync_catalog
+# in extra vars to reuse this playbook with other inventory/source pairs.

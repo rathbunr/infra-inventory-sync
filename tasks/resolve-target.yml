@@ -1,0 +1,104 @@
+---
+- name: Resolve the authoritative inventory by exact name and organization
+  ansible.builtin.set_fact:
+    _sync_inventory_matches: >-
+      {{ query('ansible.controller.controller_api', 'inventories',
+        query_params={'name': sync_target.inventory,
+                      'organization': _sync_organization_id},
+        return_all=true, verify_ssl=true) }}
+  no_log: true
+
+- name: Require one standard authoritative inventory
+  ansible.builtin.assert:
+    that:
+      - _sync_inventory_matches | length == 1
+      - _sync_inventory_matches[0].kind == ''
+    fail_msg: "Expected one standard inventory: {{ sync_target.inventory }}."
+    quiet: true
+
+- name: Resolve the configured authoritative source within its inventory
+  ansible.builtin.set_fact:
+    _sync_source_matches: >-
+      {{ query('ansible.controller.controller_api', 'inventory_sources',
+        query_params={'inventory': _sync_inventory_matches[0].id,
+                      'name': sync_target.source},
+        return_all=true, verify_ssl=true) }}
+  no_log: true
+
+- name: Require the expected authoritative source type
+  ansible.builtin.assert:
+    that:
+      - _sync_source_matches | length == 1
+      - _sync_source_matches[0].source == sync_target.source_type
+    fail_msg: >-
+      Missing, ambiguous, or incompatible source:
+      {{ sync_target.inventory }} / {{ sync_target.source }}.
+    quiet: true
+
+- name: Resolve the constructed inventory by exact name and organization
+  ansible.builtin.set_fact:
+    _sync_constructed_matches: >-
+      {{ query('ansible.controller.controller_api', 'inventories',
+        query_params={'name': sync_target.constructed_inventory,
+                      'organization': _sync_organization_id},
+        return_all=true, verify_ssl=true) }}
+  no_log: true
+
+- name: Require one constructed inventory
+  ansible.builtin.assert:
+    that:
+      - _sync_constructed_matches | length == 1
+      - _sync_constructed_matches[0].kind == 'constructed'
+    fail_msg: >-
+      Expected one constructed inventory: {{ sync_target.constructed_inventory }}.
+    quiet: true
+
+- name: Read the constructed inventory input dependencies
+  ansible.builtin.set_fact:
+    _sync_input_matches: >-
+      {{ query('ansible.controller.controller_api',
+        'inventories/' ~ (_sync_constructed_matches[0].id | string) ~ '/input_inventories/',
+        return_all=true, verify_ssl=true) }}
+  no_log: true
+
+- name: Require the constructed inventory to depend only on its mapped feed
+  ansible.builtin.assert:
+    that:
+      - _sync_input_matches | length == 1
+      - _sync_input_matches[0].id == _sync_inventory_matches[0].id
+    fail_msg: >-
+      {{ sync_target.constructed_inventory }} must have only
+      {{ sync_target.inventory }} as its input. Review the mapping before refreshing.
+    quiet: true
+
+- name: Resolve the native constructed source by type instead of its display name
+  ansible.builtin.set_fact:
+    _sync_constructed_source_matches: >-
+      {{ query('ansible.controller.controller_api', 'inventory_sources',
+        query_params={'inventory': _sync_constructed_matches[0].id,
+                      'source': 'constructed'},
+        return_all=true, verify_ssl=true) }}
+  no_log: true
+
+- name: Require exactly one native constructed source
+  ansible.builtin.assert:
+    that:
+      - _sync_constructed_source_matches | length == 1
+    fail_msg: >-
+      Expected one native constructed source for {{ sync_target.constructed_inventory }}.
+    quiet: true
+
+- name: Append the resolved IDs to the two refresh phases
+  ansible.builtin.set_fact:
+    _sync_authoritative_plan: >-
+      {{ _sync_authoritative_plan + [{
+        'inventory': sync_target.inventory,
+        'inventory_id': _sync_inventory_matches[0].id,
+        'source': sync_target.source,
+        'source_id': _sync_source_matches[0].id}] }}
+    _sync_constructed_plan: >-
+      {{ _sync_constructed_plan + [{
+        'inventory': sync_target.constructed_inventory,
+        'inventory_id': _sync_constructed_matches[0].id,
+        'source': _sync_constructed_source_matches[0].name,
+        'source_id': _sync_constructed_source_matches[0].id}] }}

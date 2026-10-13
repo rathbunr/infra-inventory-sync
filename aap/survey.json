@@ -1,0 +1,30 @@
+{
+  "name": "Inventory refresh",
+  "description": "Select authoritative inventories and explicit or native refresh behavior.",
+  "spec": [
+    {
+      "question_name": "Authoritative inventories to refresh",
+      "question_description": "Select one or both source inventory containers; mapped constructed inventories follow in force mode.",
+      "required": true,
+      "type": "multiselect",
+      "variable": "inventory_sync_inventories",
+      "min": 0,
+      "max": 1024,
+      "default": "inventory_ad\ninventory_satellite",
+      "choices": "inventory_ad\ninventory_satellite",
+      "new_question": true
+    },
+    {
+      "question_name": "Refresh mode",
+      "question_description": "force waits for source and constructed updates; automatic leaves refresh to configured AAP launch/cache settings.",
+      "required": true,
+      "type": "multiplechoice",
+      "variable": "inventory_sync_mode",
+      "min": 0,
+      "max": 1024,
+      "default": "force",
+      "choices": "force\nautomatic",
+      "new_question": true
+    }
+  ]
+}

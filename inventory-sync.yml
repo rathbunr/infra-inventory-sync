@@ -1,73 +1,177 @@
 ---
-- name: Synchronize selected AAP inventory sources
+- name: Refresh selected authoritative feeds and their constructed inventories
   hosts: localhost
   connection: local
   gather_facts: false
   any_errors_fatal: true
+  vars_files:
+    - vars/targets.yml
 
   pre_tasks:
-    - name: Require an explicit nonempty source list
+    - name: Validate refresh mode and timing
       ansible.builtin.assert:
         that:
-          - inventory_sync_sources is defined
-          - inventory_sync_sources is sequence
-          - inventory_sync_sources is not string
-          - inventory_sync_sources is not mapping
-          - inventory_sync_sources | length > 0
-        fail_msg: >-
-          Set inventory_sync_sources to a list of inventory/source mappings.
-          No inventory synchronization was requested.
-        quiet: true
-
-    - name: Require positive synchronization timeout and polling interval
-      ansible.builtin.assert:
-        that:
+          - inventory_sync_mode | default('force') in ['force', 'automatic']
           - inventory_sync_timeout | default(600) | int > 0
           - inventory_sync_interval | default(2) | float > 0
-        fail_msg: Synchronization timeout and polling interval must be positive.
+          - inventory_sync_catalog is mapping
+          - inventory_sync_sources is not defined
+        fail_msg: >-
+          Use mode force or automatic, positive timing values, and the target
+          catalog. Replace legacy inventory_sync_sources with inventory_sync_inventories.
         quiet: true
 
-    - name: Validate each inventory and source selection
+    - name: Require explicit inventory selections
+      ansible.builtin.assert:
+        that:
+          - inventory_sync_inventories is defined
+          - inventory_sync_inventories is sequence
+          - inventory_sync_inventories is not string
+          - inventory_sync_inventories is not mapping
+          - inventory_sync_inventories | length > 0
+        fail_msg: Select at least one inventory using inventory_sync_inventories.
+        quiet: true
+
+    - name: Require nonblank names instead of IDs or mappings
+      ansible.builtin.assert:
+        that:
+          - item is string
+          - item | trim | length > 0
+        fail_msg: Each inventory selection must be a nonblank name.
+        quiet: true
+      loop: "{{ inventory_sync_inventories }}"
+
+    - name: Normalize surrounding whitespace and duplicate selections
+      ansible.builtin.set_fact:
+        _sync_selections: >-
+          {{ inventory_sync_inventories | map('trim') | unique(case_sensitive=true) | list }}
+        _sync_mode: "{{ inventory_sync_mode | default('force') }}"
+
+    - name: Require every selection to exist in the configured catalog
+      ansible.builtin.assert:
+        that:
+          - item in inventory_sync_catalog
+        fail_msg: "Unknown inventory selection: {{ item }}."
+        quiet: true
+      loop: "{{ _sync_selections }}"
+
+    - name: Validate each selected mapping
       ansible.builtin.assert:
         that:
           - item is mapping
           - item.inventory is defined
           - item.source is defined
-          - item.inventory is string or item.inventory is integer
-          - item.source is string or item.source is integer
-          - item.inventory | string | trim | length > 0
-          - item.source | string | trim | length > 0
-          - item.organization | default('') is string or item.organization | default('') is integer
-        fail_msg: >-
-          Each entry requires inventory and source names or IDs.
-          Organization is optional and scopes inventory-name lookup.
+          - item.source_type is defined
+          - item.constructed_inventory is defined
+          - item.inventory is string
+          - item.source is string
+          - item.source_type is string
+          - item.constructed_inventory is string
+          - item.inventory | trim | length > 0
+          - item.source | trim | length > 0
+          - item.source_type | trim | length > 0
+          - item.constructed_inventory | trim | length > 0
+        fail_msg: Each selected catalog entry needs inventory, source, source_type, and constructed_inventory.
         quiet: true
-      loop: "{{ inventory_sync_sources }}"
+      loop: "{{ _sync_selections | map('extract', inventory_sync_catalog) | list }}"
       loop_control:
-        label: "{{ item.inventory | default('missing inventory') }} / {{ item.source | default('missing source') }}"
+        label: "{{ item.inventory | default('invalid mapping') }}"
+
+    - name: Reject forced updates in check mode
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode or _sync_mode == 'automatic'
+        fail_msg: Forced inventory updates are operations; run without check mode.
+        quiet: true
 
   tasks:
-    - name: Synchronize each selected source and wait for completion
+    - name: Report automatic refresh policy
+      ansible.builtin.debug:
+        msg: >-
+          No explicit updates requested for {{ _sync_selections | join(', ') }}.
+          Subsequent consuming jobs use AAP's configured update-on-launch and
+          cache behavior. This run does not verify freshness or change those settings.
+      when: _sync_mode == 'automatic'
+
+    - name: Finish without contacting AAP in automatic mode
+      ansible.builtin.meta: end_play
+      when: _sync_mode == 'automatic'
+
+    - name: Validate the organization selector
+      ansible.builtin.assert:
+        that:
+          - inventory_sync_organization | default('RITCSUSA') is string
+          - inventory_sync_organization | default('RITCSUSA') | trim | length > 0
+        fail_msg: Supply a nonblank organization name.
+        quiet: true
+
+    - name: Resolve the organization by exact name
+      ansible.builtin.set_fact:
+        _sync_organization_matches: >-
+          {{ query('ansible.controller.controller_api', 'organizations',
+            query_params={'name': inventory_sync_organization | default('RITCSUSA') | trim},
+            return_all=true, verify_ssl=true) }}
+      no_log: true
+
+    - name: Require one organization
+      ansible.builtin.assert:
+        that:
+          - _sync_organization_matches | length == 1
+        fail_msg: The organization name must identify exactly one accessible organization.
+        quiet: true
+
+    - name: Initialize the two refresh phases
+      ansible.builtin.set_fact:
+        _sync_organization_id: "{{ _sync_organization_matches[0].id }}"
+        _sync_authoritative_plan: []
+        _sync_constructed_plan: []
+
+    - name: Resolve and validate all selections before sending any updates
+      ansible.builtin.include_tasks: tasks/resolve-target.yml
+      loop: "{{ _sync_selections | map('extract', inventory_sync_catalog) | list }}"
+      loop_control:
+        loop_var: sync_target
+        label: "{{ sync_target.inventory }}"
+
+    - name: Show the resolved refresh plan
+      ansible.builtin.debug:
+        msg:
+          authoritative: "{{ _sync_authoritative_plan }}"
+          constructed: "{{ _sync_constructed_plan }}"
+
+    - name: Refresh authoritative sources and wait for completion
       ansible.controller.inventory_source_update:
-        inventory: "{{ item.inventory | string }}"
-        name: "{{ item.source | string }}"
-        organization: "{{ item.organization | default(omit, true) }}"
+        inventory: "{{ item.inventory_id | string }}"
+        name: "{{ item.source_id | string }}"
         wait: true
         timeout: "{{ inventory_sync_timeout | default(600) | int }}"
         interval: "{{ inventory_sync_interval | default(2) | float }}"
         validate_certs: true
-      loop: "{{ inventory_sync_sources }}"
+      loop: "{{ _sync_authoritative_plan }}"
       loop_control:
         label: "{{ item.inventory }} / {{ item.source }}"
-      register: inventory_sync_results
+      register: _sync_authoritative_results
 
-    - name: Report completed inventory synchronization jobs
+    - name: Refresh constructed inventories only after authoritative sources succeed
+      ansible.controller.inventory_source_update:
+        inventory: "{{ item.inventory_id | string }}"
+        name: "{{ item.source_id | string }}"
+        wait: true
+        timeout: "{{ inventory_sync_timeout | default(600) | int }}"
+        interval: "{{ inventory_sync_interval | default(2) | float }}"
+        validate_certs: true
+      loop: "{{ _sync_constructed_plan }}"
+      loop_control:
+        label: "{{ item.inventory }} / {{ item.source }}"
+      register: _sync_constructed_results
+
+    - name: Report completed native update jobs
       ansible.builtin.debug:
         msg:
           inventory: "{{ item.item.inventory }}"
-          source: "{{ item.item.source }}"
+          source_id: "{{ item.item.source_id }}"
           update_job_id: "{{ item.id }}"
           status: "{{ item.status }}"
-      loop: "{{ inventory_sync_results.results }}"
+      loop: "{{ _sync_authoritative_results.results + _sync_constructed_results.results }}"
       loop_control:
-        label: "{{ item.item.inventory }} / {{ item.item.source }}"
+        label: "{{ item.item.inventory }}"
